@@ -952,7 +952,7 @@ GrGeometryProcessor* DIEllipseGeometryProcessor::TestCreate(GrProcessorTestData*
 // We have two possible cases for geometry for a circle:
 
 // In the case of a normal fill, we draw geometry for the circle as an octagon.
-static const uint16_t gFillCircleIndices[] = {
+static const constexpr uint16_t gFillCircleIndices[] = {
         // enter the octagon
         // clang-format off
         0, 1, 8, 1, 2, 8,
@@ -963,7 +963,7 @@ static const uint16_t gFillCircleIndices[] = {
 };
 
 // For stroked circles, we use two nested octagons.
-static const uint16_t gStrokeCircleIndices[] = {
+static const constexpr uint16_t gStrokeCircleIndices[] = {
         // enter the octagon
         // clang-format off
         0, 1,  9, 0, 9,   8,
@@ -1375,32 +1375,43 @@ private:
                 offsetClipDist = 0.5f / halfWidth;
             }
 
-            for (int i = 0; i < 8; ++i) {
-                // This clips the normalized offset to the half-plane we computed above. Then we
-                // compute the vertex position from this.
-                SkScalar dist = std::min(kOctagonOuter[i].dot(geoClipPlane) + offsetClipDist, 0.0f);
-                SkVector offset = kOctagonOuter[i] - geoClipPlane * dist;
-                vertices << (center + offset * halfWidth)
-                         << color
-                         << offset
-                         << radii;
-                if (fClipPlane) {
-                    vertices << circle.fClipPlane;
-                }
-                if (fClipPlaneIsect) {
-                    vertices << circle.fIsectPlane;
-                }
-                if (fClipPlaneUnion) {
-                    vertices << circle.fUnionPlane;
-                }
-                if (fRoundCaps) {
-                    vertices << circle.fRoundCapCenters;
+	    if (!fClipPlane && !fClipPlaneIsect && !fClipPlaneUnion && !fRoundCaps) {
+                // Fast path.
+                for (int i = 0; i < 8; ++i) {
+                    vertices << (center + kOctagonOuter[i] * halfWidth)
+                             << color
+                             << kOctagonOuter[i]
+                             << radii;
+	        }
+            } else {
+                for (int i = 0; i < 8; ++i) {
+                    // This clips the normalized offset to the half-plane we computed above. Then we
+                    // compute the vertex position from this.
+                    SkScalar dist = std::min(kOctagonOuter[i].dot(geoClipPlane) + offsetClipDist, 0.0f);
+                    SkVector offset = kOctagonOuter[i] - geoClipPlane * dist;
+                    vertices << (center + offset * halfWidth)
+                             << color
+                             << offset
+                             << radii;
+                    if (fClipPlane) {
+                        vertices << circle.fClipPlane;
+                    }
+                    if (fClipPlaneIsect) {
+                        vertices << circle.fIsectPlane;
+                    }
+                    if (fClipPlaneUnion) {
+                        vertices << circle.fUnionPlane;
+                    }
+                    if (fRoundCaps) {
+                        vertices << circle.fRoundCapCenters;
+                    }
                 }
             }
 
             if (circle.fStroked) {
                 // compute the inner ring
 
+			#pragma unroll
                 for (int i = 0; i < 8; ++i) {
                     vertices << (center + kOctagonInner[i] * circle.fInnerRadius)
                              << color
@@ -1419,6 +1430,15 @@ private:
                         vertices << circle.fRoundCapCenters;
                     }
                 }
+
+		using vec16 = uint16_t __attribute__((vector_size(16)));
+		vec16 *dst = (vec16 *)indices;
+		const vec16 *src = (const vec16 *)gStrokeCircleIndices;
+                for (int i = 0; i < kIndicesPerStrokeCircle / 8; ++i) {
+                    dst[i] = src[i] + uint16_t{currStartVertex};
+                }
+                indices += kIndicesPerStrokeCircle;
+                currStartVertex += kVertsPerStrokeCircle;
             } else {
                 // filled
                 vertices << center << color << SkPoint::Make(0, 0) << radii;
@@ -1434,15 +1454,16 @@ private:
                 if (fRoundCaps) {
                     vertices << circle.fRoundCapCenters;
                 }
-            }
 
-            const uint16_t* primIndices = circle_type_to_indices(circle.fStroked);
-            const int primIndexCount = circle_type_to_index_count(circle.fStroked);
-            for (int i = 0; i < primIndexCount; ++i) {
-                *indices++ = primIndices[i] + currStartVertex;
+		using vec16 = uint16_t __attribute__((vector_size(16)));
+		vec16 *dst = (vec16 *)indices;
+		const vec16 *src = (const vec16 *)gFillCircleIndices;
+                for (int i = 0; i < kIndicesPerFillCircle / 8; ++i) {
+                    dst[i] = src[i] + uint16_t{currStartVertex};
+                }
+                indices += kIndicesPerFillCircle;
+                currStartVertex += kVertsPerFillCircle;
             }
-
-            currStartVertex += circle_type_to_vert_count(circle.fStroked);
         }
 
         fMesh = target->allocMesh();
